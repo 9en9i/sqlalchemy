@@ -800,6 +800,63 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         is_true(MyClass.__table__.c.data_two.nullable)
         eq_(MyClass.__table__.c.data_three.type.length, 50)
 
+    def test_pep593_nested_annotated(self, decl_base: Type[DeclarativeBase]):
+        T = TypeVar("T")  # noqa
+
+        Primary: TypeAlias = Annotated[T, mapped_column(primary_key=True)]  # noqa
+        Unique: TypeAlias = Annotated[T, mapped_column(unique=True)]  # noqa
+        BigInt: TypeAlias = Annotated[int, mapped_column(BIGINT())]  # noqa
+        Str60Annotated: TypeAlias = Annotated[str, mapped_column(String(60))]  # noqa
+        decl_base.registry.update_type_annotation_map(
+            {Str60Annotated: String(30)}
+        )
+
+        class MyClass(decl_base):
+            __tablename__ = "my_table"
+
+            id: Mapped[Primary[BigInt]]
+            nested_optional: Mapped[Unique[Optional[Primary[Optional[BigInt]]]]]
+            some_field: Mapped[Primary[Unique[BigInt]]]
+            some_field_int: Mapped[Primary[Unique[int]]]
+            old_field: Mapped[str]
+            optional_some_field: Mapped[Primary[Optional[Unique[BigInt]]]]
+            str_30_field: Mapped[Str60Annotated]
+            optional_uniq: Mapped[Unique[Optional[str]]]
+            explicitly_optional_uniq: Mapped[Unique[BigInt]] = mapped_column(nullable=True)
+            explicitly_type_optional_uniq: Mapped[Unique[int]] = mapped_column(BIGINT(), nullable=True)
+
+        is_(MyClass.__table__.c.id.type.__class__, BIGINT)
+        eq_(MyClass.__table__.c.id.primary_key, True)
+
+        is_(MyClass.__table__.c.nested_optional.type.__class__, BIGINT)
+        eq_(MyClass.__table__.c.nested_optional.unique, True)
+        eq_(MyClass.__table__.c.nested_optional.primary_key, True)
+
+        is_(MyClass.__table__.c.some_field.type.__class__, BIGINT)
+        eq_(MyClass.__table__.c.some_field.unique, True)
+        eq_(MyClass.__table__.c.some_field.primary_key, True)
+
+        is_(MyClass.__table__.c.some_field_int.type.__class__, Integer)
+        eq_(MyClass.__table__.c.some_field_int.unique, True)
+        eq_(MyClass.__table__.c.some_field_int.primary_key, True)
+
+        is_(MyClass.__table__.c.old_field.type.__class__, String)
+
+
+        is_(MyClass.__table__.c.optional_some_field.type.__class__, BIGINT)
+        eq_(MyClass.__table__.c.optional_some_field.unique, True)
+        eq_(MyClass.__table__.c.optional_some_field.nullable, True)
+
+        is_(MyClass.__table__.c.optional_uniq.type.__class__, String)
+        eq_(MyClass.__table__.c.optional_uniq.unique, True)
+        eq_(MyClass.__table__.c.optional_uniq.nullable, True)
+
+        eq_(MyClass.__table__.c.str_30_field.type.length, 30)
+
+        is_(MyClass.__table__.c.explicitly_type_optional_uniq.type.__class__, BIGINT)
+        eq_(MyClass.__table__.c.explicitly_type_optional_uniq.unique, True)
+        eq_(MyClass.__table__.c.explicitly_type_optional_uniq.nullable, True)
+
     def test_plain_typealias_as_typemap_keys(
         self, decl_base: Type[DeclarativeBase]
     ):
