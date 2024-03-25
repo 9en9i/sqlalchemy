@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from ._typing import _RegistryType
     from .base import Mapped
     from .decl_base import _ClassScanMapperConfig
+    from ..orm.decl_api import _MutableTypeAnnotationMapType
     from .mapper import Mapper
     from .session import Session
     from .state import _InstallLoaderCallableProto
@@ -729,6 +730,40 @@ class MappedColumn(
             cls, registry, param_annotation, originating_module
         )
 
+    def _merge_annotated_column(
+        self,
+        argument,
+        mapped_columns: list[MappedColumn],
+        annotation_map: _MutableTypeAnnotationMapType,
+    ) -> MappedColumn:
+        merged_column = MappedColumn()
+        for mapped in mapped_columns:
+            mapped.column._nested_merge(
+                argument, merged_column.column, annotation_map
+            )
+
+        self.column._nested_merge(
+            argument, merged_column.column, annotation_map
+        )
+
+        return merged_column
+
+    def _find_nested_column(
+        self, pep_593_components: tuple[Any, ...]
+    ) -> list[MappedColumn[Any]]:
+        elements: list[MappedColumn[Any]] = []
+        for component in pep_593_components:
+            if isinstance(component, MappedColumn):
+                elements.append(component)
+                continue
+
+            if is_pep593(component) or is_union(component):
+                elements.extend(
+                    self._find_nested_column(typing_get_args(component))
+                )
+
+        return elements
+
     def _init_column_for_annotation(
         self,
         cls: Type[Any],
@@ -759,7 +794,7 @@ class MappedColumn(
 
         our_type = de_optionalize_union_types(argument)
 
-        use_args_from = None
+        columns: list[MappedColumn] = []
 
         our_original_type = our_type
 
@@ -777,13 +812,28 @@ class MappedColumn(
                 nullable = True
                 if not self._has_nullable:
                     self.column.nullable = nullable
-            for elem in pep_593_components[1:]:
+
+            elements = pep_593_components[1:]
+            if is_union(pep_593_components[0]):
+                elements = self._find_nested_column(pep_593_components)
+
+            for elem in elements:
                 if isinstance(elem, MappedColumn):
-                    use_args_from = elem
-                    break
+                    columns.append(elem)
         else:
             our_type_is_pep593 = False
             raw_pep_593_type = None
+
+        use_args_from = None
+        if len(columns) == 1:
+            use_args_from = columns[0]
+
+        if len(columns) >= 1:
+            use_args_from = self._merge_annotated_column(
+                argument,
+                columns,
+                registry.type_annotation_map,
+            )
 
         if use_args_from is not None:
             if (

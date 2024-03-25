@@ -84,12 +84,16 @@ from .. import event
 from .. import exc
 from .. import inspection
 from .. import util
+from ..exc import ArgumentError
 from ..util import HasMemoized
 from ..util.typing import Literal
+from ..util.typing import typing_get_args
 from ..util.typing import Self
+from ..util.typing import Annotated
 from ..util.typing import TypeGuard
 
 if typing.TYPE_CHECKING:
+    from ..util.typing import _AnnotationScanType
     from ._typing import _AutoIncrementType
     from ._typing import _DDLColumnArgument
     from ._typing import _DDLColumnReferenceArgument
@@ -105,6 +109,7 @@ if typing.TYPE_CHECKING:
     from .visitors import anon_map
     from ..engine import Connection
     from ..engine import Engine
+    from ..orm.decl_api import _MutableTypeAnnotationMapType
     from ..engine.interfaces import _CoreMultiExecuteParams
     from ..engine.interfaces import CoreExecuteOptionsParameter
     from ..engine.interfaces import ExecutionContext
@@ -2592,6 +2597,138 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T]):
             if not fk.constraint:
                 new_fk = fk._copy()
                 new_fk._set_parent(other)
+
+    def _nested_merge(
+        self,
+        argument: _AnnotationScanType,
+        target_new_column: Column[Any],
+        annotation_map: _MutableTypeAnnotationMapType,
+    ) -> None:
+
+        if not target_new_column.primary_key and self.primary_key:
+            target_new_column.primary_key = True
+        else:
+            if self.primary_key:
+                raise ArgumentError
+
+        if (
+            target_new_column.autoincrement == "auto"
+            and self.autoincrement != "auto"
+        ):
+            target_new_column.autoincrement = self.autoincrement
+        else:
+            if self.autoincrement != "auto":
+                raise ArgumentError
+
+        if not target_new_column.system and self.system:
+            target_new_column.system = self.system
+        else:
+            if self.system:
+                raise ArgumentError
+
+        if not target_new_column.info and self.info:
+            target_new_column.info.update(self.info)
+        else:
+            if self.info:
+                raise ArgumentError
+
+        if target_new_column.type._isnull and not self.type._isnull:
+            annotated_type = None
+            args = typing_get_args(argument)
+            for i in args[1:]:
+                annotated_type = annotation_map.get(Annotated[args[0], i])
+                break
+
+            type_ = annotated_type or self.type
+
+            if isinstance(type_, SchemaEventTarget):
+                type_ = type_.copy()
+
+            target_new_column.type = type_
+
+            if isinstance(type_, SchemaEventTarget):
+                type_._set_parent_with_dispatch(target_new_column)
+
+            for impl in type_._variant_mapping.values():
+                if isinstance(impl, SchemaEventTarget):
+                    impl._set_parent_with_dispatch(target_new_column)
+
+        else:
+            if not self.type._isnull:
+                raise ArgumentError
+
+        if target_new_column.default is None and self.default is not None:
+            new_default = self.default._copy()
+            new_default._set_parent(target_new_column)
+        else:
+            if self.default is not None:
+                raise ArgumentError
+
+        if (
+            target_new_column.server_default is None
+            and self.server_default is not None
+        ):
+            new_server_default = self.server_default
+            if isinstance(new_server_default, FetchedValue):
+                new_server_default = new_server_default._copy()
+                new_server_default._set_parent(target_new_column)
+            else:
+                target_new_column.server_default = new_server_default
+        else:
+            if self.server_default is not None:
+                raise ArgumentError
+
+        if (
+            target_new_column.server_onupdate is None
+            and self.server_onupdate is not None
+        ):
+            new_server_onupdate = self.server_onupdate
+            new_server_onupdate = new_server_onupdate._copy()
+            new_server_onupdate._set_parent(target_new_column)
+        else:
+            if self.server_onupdate is not None:
+                raise ArgumentError
+
+        if target_new_column.onupdate is None and self.onupdate is not None:
+            new_onupdate = self.onupdate._copy()
+            new_onupdate._set_parent(target_new_column)
+        else:
+            if self.onupdate is not None:
+                raise ArgumentError
+
+        if target_new_column.index is None and self.index in (True, False):
+            target_new_column.index = self.index
+        else:
+            if self.index in (True, False):
+                raise ArgumentError
+
+        if target_new_column.unique is None and self.unique in (True, False):
+            target_new_column.unique = self.unique
+        else:
+            if self.unique in (True, False):
+                raise ArgumentError
+
+        if target_new_column.doc is None and self.doc is not None:
+            target_new_column.doc = self.doc
+        else:
+            if self.doc is not None:
+                raise ArgumentError
+
+        if target_new_column.comment is None and self.comment is not None:
+            target_new_column.comment = self.comment
+        else:
+            if self.comment is not None:
+                raise ArgumentError
+
+        for const in self.constraints:
+            if not const._type_bound:
+                new_const = const._copy()
+                new_const._set_parent(target_new_column)
+
+        for fk in self.foreign_keys:
+            if not fk.constraint:
+                new_fk = fk._copy()
+                new_fk._set_parent(target_new_column)
 
     def _make_proxy(
         self,
