@@ -803,10 +803,14 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
     def test_pep593_nested_annotated(self, decl_base: Type[DeclarativeBase]):
         T = TypeVar("T")  # noqa
 
-        Primary: TypeAlias = Annotated[T, mapped_column(primary_key=True)]  # noqa
+        Primary: TypeAlias = Annotated[
+            T, mapped_column(primary_key=True)
+        ]  # noqa
         Unique: TypeAlias = Annotated[T, mapped_column(unique=True)]  # noqa
         BigInt: TypeAlias = Annotated[int, mapped_column(BIGINT())]  # noqa
-        Str60Annotated: TypeAlias = Annotated[str, mapped_column(String(60))]  # noqa
+        Str60Annotated: TypeAlias = Annotated[
+            str, mapped_column(String(60))
+        ]  # noqa
         decl_base.registry.update_type_annotation_map(
             {Str60Annotated: String(30)}
         )
@@ -815,15 +819,21 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             __tablename__ = "my_table"
 
             id: Mapped[Primary[BigInt]]
-            nested_optional: Mapped[Unique[Optional[Primary[Optional[BigInt]]]]]
+            nested_optional: Mapped[
+                Unique[Optional[Primary[Optional[BigInt]]]]
+            ]
             some_field: Mapped[Primary[Unique[BigInt]]]
             some_field_int: Mapped[Primary[Unique[int]]]
             old_field: Mapped[str]
             optional_some_field: Mapped[Primary[Optional[Unique[BigInt]]]]
             str_30_field: Mapped[Str60Annotated]
             optional_uniq: Mapped[Unique[Optional[str]]]
-            explicitly_optional_uniq: Mapped[Unique[BigInt]] = mapped_column(nullable=True)
-            explicitly_type_optional_uniq: Mapped[Unique[int]] = mapped_column(BIGINT(), nullable=True)
+            explicitly_optional_uniq: Mapped[Unique[BigInt]] = mapped_column(
+                nullable=True
+            )
+            explicitly_type_optional_uniq: Mapped[Unique[int]] = mapped_column(
+                BIGINT(), nullable=True
+            )
 
         is_(MyClass.__table__.c.id.type.__class__, BIGINT)
         eq_(MyClass.__table__.c.id.primary_key, True)
@@ -842,7 +852,6 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
         is_(MyClass.__table__.c.old_field.type.__class__, String)
 
-
         is_(MyClass.__table__.c.optional_some_field.type.__class__, BIGINT)
         eq_(MyClass.__table__.c.optional_some_field.unique, True)
         eq_(MyClass.__table__.c.optional_some_field.nullable, True)
@@ -853,7 +862,10 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
 
         eq_(MyClass.__table__.c.str_30_field.type.length, 30)
 
-        is_(MyClass.__table__.c.explicitly_type_optional_uniq.type.__class__, BIGINT)
+        is_(
+            MyClass.__table__.c.explicitly_type_optional_uniq.type.__class__,
+            BIGINT,
+        )
         eq_(MyClass.__table__.c.explicitly_type_optional_uniq.unique, True)
         eq_(MyClass.__table__.c.explicitly_type_optional_uniq.nullable, True)
 
