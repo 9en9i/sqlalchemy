@@ -21,11 +21,12 @@ from typing import TypeVar
 from typing import Union
 import uuid
 
+from sqlalchemy.sql.schema import ScalarElementColumnDefault
 from typing_extensions import get_args as get_args
 from typing_extensions import Literal as Literal
 from typing_extensions import TypeAlias as TypeAlias
 
-from sqlalchemy import BIGINT
+from sqlalchemy import BIGINT, FetchedValue
 from sqlalchemy import BigInteger
 from sqlalchemy import Column
 from sqlalchemy import DateTime
@@ -800,17 +801,70 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         is_true(MyClass.__table__.c.data_two.nullable)
         eq_(MyClass.__table__.c.data_three.type.length, 50)
 
-    def test_pep593_nested_annotated(self, decl_base: Type[DeclarativeBase]):
+    @testing.combinations(
+        ("primary_key", "primary_key", True, int, Integer),
+        ("primary_key", "primary_key", False, int, Integer),
+        ("type_", "type", BIGINT(), int, BIGINT),
+        ("unique", "unique", True, int, Integer),
+        ("unique", "unique", False, int, Integer),
+        ("autoincrement", "autoincrement", True, int, Integer),
+        ("autoincrement", "autoincrement", False, int, Integer),
+        ("autoincrement", "autoincrement", "ignore_fk", int, Integer),
+        ("system", "system", True, int, Integer),
+        ("system", "system", False, int, Integer),
+        ("info", "info", {"key": "value"}, int, Integer),
+        ("default", "default", 1, int, Integer),
+        ("server_default", "server_default", "1", int, Integer),
+        ("server_onupdate", "server_onupdate", FetchedValue(), int, Integer),
+        ("onupdate", "onupdate", 1, int, Integer),
+        ("index", "index", True, int, Integer),
+        ("index", "index", False, int, Integer),
+        ("doc", "doc", "_doc", int, Integer),
+        ("comment", "comment", "_comment", int, Integer),
+        argnames="argname, column_name, value, python_type, sql_type",
+    )
+    def test_pep593_nested_annotated(
+        self,
+        decl_base: Type[DeclarativeBase],
+        argname,
+        column_name,
+        value,
+        python_type,
+        sql_type,
+    ):
+        T = TypeVar("T")  # noqa
+        AnnotatedType: TypeAlias = Annotated[  # noqa
+            T, mapped_column(**{argname: value})
+        ]
+
+        class MyClass(decl_base):
+            __tablename__ = "my_table"
+
+            id: Mapped[int] = mapped_column(primary_key=True)
+            field: Mapped[AnnotatedType[python_type]]
+
+        is_(MyClass.__table__.c.field.type.__class__, sql_type)
+        value = getattr(MyClass.__table__.c.field, column_name)
+
+        if isinstance(value, ScalarElementColumnDefault):
+            value = value.arg
+
+        eq_(value, value)
+
+    def test_pep593_nested_combinations_annotated(
+        self,
+        decl_base: Type[DeclarativeBase],
+    ):
         T = TypeVar("T")  # noqa
 
-        Primary: TypeAlias = Annotated[
+        Primary: TypeAlias = Annotated[  # noqa
             T, mapped_column(primary_key=True)
-        ]  # noqa
+        ]
         Unique: TypeAlias = Annotated[T, mapped_column(unique=True)]  # noqa
         BigInt: TypeAlias = Annotated[int, mapped_column(BIGINT())]  # noqa
-        Str60Annotated: TypeAlias = Annotated[
-            str, mapped_column(String(60))
-        ]  # noqa
+        Str60Annotated: TypeAlias = Annotated[  # noqa
+            str, mapped_column(String(60))  # noqa
+        ]
         decl_base.registry.update_type_annotation_map(
             {Str60Annotated: String(30)}
         )
@@ -818,16 +872,16 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         class MyClass(decl_base):
             __tablename__ = "my_table"
 
-            id: Mapped[Primary[BigInt]]
+            id: Mapped[Primary[int]]
+            big_id: Mapped[Primary[BigInt]]
+            normal_optional: Mapped[Optional[BigInt]]
             nested_optional: Mapped[
-                Unique[Optional[Primary[Optional[BigInt]]]]
+                Optional[Unique[Optional[Primary[Optional[BigInt]]]]]
             ]
-            some_field: Mapped[Primary[Unique[BigInt]]]
-            some_field_int: Mapped[Primary[Unique[int]]]
-            old_field: Mapped[str]
-            optional_some_field: Mapped[Primary[Optional[Unique[BigInt]]]]
+            nested_normal_field: Mapped[Primary[Unique[BigInt]]]
+            nested_normal_field_with_python_type: Mapped[Primary[Unique[int]]]
+            default_field: Mapped[str]
             str_30_field: Mapped[Str60Annotated]
-            optional_uniq: Mapped[Unique[Optional[str]]]
             explicitly_optional_uniq: Mapped[Unique[BigInt]] = mapped_column(
                 nullable=True
             )
@@ -835,32 +889,48 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
                 BIGINT(), nullable=True
             )
 
-        is_(MyClass.__table__.c.id.type.__class__, BIGINT)
+        is_(MyClass.__table__.c.id.type.__class__, Integer)
         eq_(MyClass.__table__.c.id.primary_key, True)
+
+        is_(MyClass.__table__.c.big_id.type.__class__, BIGINT)
+        eq_(MyClass.__table__.c.big_id.primary_key, True)
+
+        is_(MyClass.__table__.c.normal_optional.type.__class__, BIGINT)
+        eq_(MyClass.__table__.c.normal_optional.nullable, True)
 
         is_(MyClass.__table__.c.nested_optional.type.__class__, BIGINT)
         eq_(MyClass.__table__.c.nested_optional.unique, True)
         eq_(MyClass.__table__.c.nested_optional.primary_key, True)
+        eq_(MyClass.__table__.c.nested_optional.nullable, True)
 
-        is_(MyClass.__table__.c.some_field.type.__class__, BIGINT)
-        eq_(MyClass.__table__.c.some_field.unique, True)
-        eq_(MyClass.__table__.c.some_field.primary_key, True)
+        is_(MyClass.__table__.c.nested_normal_field.type.__class__, BIGINT)
+        eq_(MyClass.__table__.c.nested_normal_field.unique, True)
+        eq_(MyClass.__table__.c.nested_normal_field.primary_key, True)
 
-        is_(MyClass.__table__.c.some_field_int.type.__class__, Integer)
-        eq_(MyClass.__table__.c.some_field_int.unique, True)
-        eq_(MyClass.__table__.c.some_field_int.primary_key, True)
+        is_(
+            MyClass.__table__.c.nested_normal_field_with_python_type.type.__class__,
+            Integer,
+        )
+        eq_(
+            MyClass.__table__.c.nested_normal_field_with_python_type.unique,
+            True,
+        )
+        eq_(
+            MyClass.__table__.c.nested_normal_field_with_python_type.primary_key,
+            True,
+        )
 
-        is_(MyClass.__table__.c.old_field.type.__class__, String)
-
-        is_(MyClass.__table__.c.optional_some_field.type.__class__, BIGINT)
-        eq_(MyClass.__table__.c.optional_some_field.unique, True)
-        eq_(MyClass.__table__.c.optional_some_field.nullable, True)
-
-        is_(MyClass.__table__.c.optional_uniq.type.__class__, String)
-        eq_(MyClass.__table__.c.optional_uniq.unique, True)
-        eq_(MyClass.__table__.c.optional_uniq.nullable, True)
+        is_(MyClass.__table__.c.default_field.type.__class__, String)
+        eq_(MyClass.__table__.c.default_field.unique, None)
+        eq_(MyClass.__table__.c.default_field.primary_key, False)
 
         eq_(MyClass.__table__.c.str_30_field.type.length, 30)
+
+        is_(
+            MyClass.__table__.c.explicitly_optional_uniq.type.__class__, BIGINT
+        )
+        eq_(MyClass.__table__.c.explicitly_optional_uniq.unique, True)
+        eq_(MyClass.__table__.c.explicitly_optional_uniq.nullable, True)
 
         is_(
             MyClass.__table__.c.explicitly_type_optional_uniq.type.__class__,
