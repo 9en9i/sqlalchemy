@@ -70,11 +70,11 @@ if TYPE_CHECKING:
     from ._typing import _RegistryType
     from .base import Mapped
     from .decl_base import _ClassScanMapperConfig
-    from ..orm.decl_api import _MutableTypeAnnotationMapType
     from .mapper import Mapper
     from .session import Session
     from .state import _InstallLoaderCallableProto
     from .state import InstanceState
+    from ..orm.decl_api import _MutableTypeAnnotationMapType
     from ..sql._typing import _InfoType
     from ..sql.elements import ColumnElement
     from ..sql.elements import NamedColumn

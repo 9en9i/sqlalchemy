@@ -26,12 +26,12 @@ from typing_extensions import Literal as Literal
 from typing_extensions import TypeAlias as TypeAlias
 
 from sqlalchemy import BIGINT
-from sqlalchemy import FetchedValue
 from sqlalchemy import BigInteger
 from sqlalchemy import Column
 from sqlalchemy import DateTime
 from sqlalchemy import exc
 from sqlalchemy import exc as sa_exc
+from sqlalchemy import FetchedValue
 from sqlalchemy import ForeignKey
 from sqlalchemy import func
 from sqlalchemy import Identity

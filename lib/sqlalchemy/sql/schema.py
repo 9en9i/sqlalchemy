@@ -86,14 +86,13 @@ from .. import inspection
 from .. import util
 from ..exc import ArgumentError
 from ..util import HasMemoized
-from ..util.typing import Literal
-from ..util.typing import typing_get_args
-from ..util.typing import Self
 from ..util.typing import Annotated
+from ..util.typing import Literal
+from ..util.typing import Self
 from ..util.typing import TypeGuard
+from ..util.typing import typing_get_args
 
 if typing.TYPE_CHECKING:
-    from ..util.typing import _AnnotationScanType
     from ._typing import _AutoIncrementType
     from ._typing import _DDLColumnArgument
     from ._typing import _DDLColumnReferenceArgument
@@ -109,13 +108,14 @@ if typing.TYPE_CHECKING:
     from .visitors import anon_map
     from ..engine import Connection
     from ..engine import Engine
-    from ..orm.decl_api import _MutableTypeAnnotationMapType
     from ..engine.interfaces import _CoreMultiExecuteParams
     from ..engine.interfaces import CoreExecuteOptionsParameter
     from ..engine.interfaces import ExecutionContext
     from ..engine.mock import MockConnection
     from ..engine.reflection import _ReflectionInfo
+    from ..orm.decl_api import _MutableTypeAnnotationMapType
     from ..sql.selectable import FromClause
+    from ..util.typing import _AnnotationScanType
 
 _T = TypeVar("_T", bound="Any")
 _SI = TypeVar("_SI", bound="SchemaItem")
