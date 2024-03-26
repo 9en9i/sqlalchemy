@@ -21,12 +21,12 @@ from typing import TypeVar
 from typing import Union
 import uuid
 
-from sqlalchemy.sql.schema import ScalarElementColumnDefault
 from typing_extensions import get_args as get_args
 from typing_extensions import Literal as Literal
 from typing_extensions import TypeAlias as TypeAlias
 
-from sqlalchemy import BIGINT, FetchedValue
+from sqlalchemy import BIGINT
+from sqlalchemy import FetchedValue
 from sqlalchemy import BigInteger
 from sqlalchemy import Column
 from sqlalchemy import DateTime
@@ -74,6 +74,7 @@ from sqlalchemy.orm.properties import MappedColumn
 from sqlalchemy.orm.writeonly import WriteOnlyAttributeImpl
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.sql.base import _NoArg
+from sqlalchemy.sql.schema import ScalarElementColumnDefault
 from sqlalchemy.sql.sqltypes import Enum
 from sqlalchemy.testing import AssertsCompiledSQL
 from sqlalchemy.testing import eq_
