@@ -553,8 +553,10 @@ class MappedColumn(
     )
 
     deferred: Union[_NoArg, bool]
-    deferred_raiseload: bool
-    deferred_group: Optional[str]
+    deferred_raiseload: Union[_NoArg, bool, None]
+    deferred_group: Union[_NoArg, str, None]
+    active_history: Union[_NoArg, bool]
+    _use_existing_column: Union[_NoArg, bool]
 
     column: Column[_T]
     foreign_keys: Optional[Set[ForeignKey]]
@@ -565,7 +567,9 @@ class MappedColumn(
             "attribute_options", _DEFAULT_ATTRIBUTE_OPTIONS
         )
 
-        self._use_existing_column = kw.pop("use_existing_column", False)
+        self._use_existing_column = kw.pop(
+            "use_existing_column", _NoArg.NO_ARG
+        )
 
         self._has_dataclass_arguments = (
             attr_opts is not None
@@ -584,10 +588,10 @@ class MappedColumn(
         if attr_opts.dataclasses_default is not _NoArg.NO_ARG:
             kw["default"] = attr_opts.dataclasses_default
 
-        self.deferred_group = kw.pop("deferred_group", None)
-        self.deferred_raiseload = kw.pop("deferred_raiseload", None)
+        self.deferred_group = kw.pop("deferred_group", _NoArg.NO_ARG)
+        self.deferred_raiseload = kw.pop("deferred_raiseload", _NoArg.NO_ARG)
         self.deferred = kw.pop("deferred", _NoArg.NO_ARG)
-        self.active_history = kw.pop("active_history", False)
+        self.active_history = kw.pop("active_history", _NoArg.NO_ARG)
 
         self._sort_order = kw.pop("sort_order", _NoArg.NO_ARG)
 
@@ -599,7 +603,6 @@ class MappedColumn(
 
         self.foreign_keys = self.column.foreign_keys
         self._has_nullable = "nullable" in kw and kw.get("nullable") not in (
-            None,
             SchemaConst.NULL_UNSPECIFIED,
         )
         util.set_creation_order(self)
@@ -638,24 +641,37 @@ class MappedColumn(
 
     @property
     def mapper_property_to_assign(self) -> Optional[MapperProperty[_T]]:
+        deferred_group = (
+            None
+            if self.deferred_group is _NoArg.NO_ARG
+            else self.deferred_group
+        )
+        deferred_raiseload = (
+            None
+            if self.deferred_raiseload is _NoArg.NO_ARG
+            else self.deferred_raiseload
+        )
+        active_history = (
+            False
+            if self.active_history is _NoArg.NO_ARG
+            else self.active_history
+        )
         effective_deferred = self.deferred
         if effective_deferred is _NoArg.NO_ARG:
-            effective_deferred = bool(
-                self.deferred_group or self.deferred_raiseload
-            )
+            effective_deferred = bool(deferred_group or deferred_raiseload)
 
         if (
             effective_deferred
-            or self.active_history
+            or active_history
             or self._default_scalar_value is not _NoArg.NO_ARG
         ):
             return ColumnProperty(
                 self.column,
                 deferred=effective_deferred,
-                group=self.deferred_group,
-                raiseload=self.deferred_raiseload,
+                group=deferred_group,
+                raiseload=bool(deferred_raiseload),
                 attribute_options=self._attribute_options,
-                active_history=self.active_history,
+                active_history=active_history,
                 default_scalar_value=(
                     self._default_scalar_value
                     if self._default_scalar_value is not _NoArg.NO_ARG
@@ -704,7 +720,8 @@ class MappedColumn(
         given_column: Column[_T],
     ) -> Column[_T]:
         if (
-            self._use_existing_column
+            self._use_existing_column is not _NoArg.NO_ARG
+            and self._use_existing_column
             and decl_scan.inherits
             and decl_scan.single
         ):
@@ -834,20 +851,11 @@ class MappedColumn(
                 )
             find_mapped_in = pep_593_components[1:]
 
-        use_args_from: Optional[MappedColumn[Any]]
-        for elem in find_mapped_in:
-            if isinstance(elem, MappedColumn):
-                use_args_from = elem
-                break
-        else:
-            use_args_from = None
+        mapped_columns = [
+            elem for elem in find_mapped_in if isinstance(elem, MappedColumn)
+        ]
 
-        if use_args_from is not None:
-
-            self.column = use_args_from._adjust_for_existing_column(
-                decl_scan, key, self.column
-            )
-
+        if mapped_columns:
             if (
                 self._has_insert_default
                 or self._attribute_options.dataclasses_default
@@ -857,69 +865,81 @@ class MappedColumn(
             else:
                 omit_defaults = False
 
-            use_args_from.column._merge(
-                self.column, omit_defaults=omit_defaults
-            )
-            sqltype = self.column.type
-
-            if (
-                use_args_from.deferred is not _NoArg.NO_ARG
-                and self.deferred is _NoArg.NO_ARG
-            ):
-                self.deferred = use_args_from.deferred
-
-            if (
-                use_args_from.deferred_group is not None
-                and self.deferred_group is None
-            ):
-                self.deferred_group = use_args_from.deferred_group
-
-            if (
-                use_args_from.deferred_raiseload is not None
-                and self.deferred_raiseload is None
-            ):
-                self.deferred_raiseload = use_args_from.deferred_raiseload
-
-            if (
-                use_args_from._use_existing_column
-                and not self._use_existing_column
-            ):
-                self._use_existing_column = True
-
-            if use_args_from.active_history:
-                self.active_history = use_args_from.active_history
-
-            if (
-                use_args_from._sort_order is not None
-                and self._sort_order is _NoArg.NO_ARG
-            ):
-                self._sort_order = use_args_from._sort_order
-
-            if (
-                use_args_from.column.key is not None
-                or use_args_from.column.name is not None
-            ):
-                util.warn_deprecated(
-                    "Can't use the 'key' or 'name' arguments in "
-                    "Annotated with mapped_column(); this will be ignored",
-                    "2.0.22",
-                )
-
-            if use_args_from._has_dataclass_arguments:
-                for idx, arg in enumerate(
-                    use_args_from._attribute_options._fields
+            for use_args_from in reversed(mapped_columns):
+                if (
+                    use_args_from.deferred is not _NoArg.NO_ARG
+                    and self.deferred is _NoArg.NO_ARG
                 ):
-                    if (
-                        use_args_from._attribute_options[idx]
-                        is not _NoArg.NO_ARG
+                    self.deferred = use_args_from.deferred
+
+                if (
+                    use_args_from.deferred_group is not _NoArg.NO_ARG
+                    and self.deferred_group is _NoArg.NO_ARG
+                ):
+                    self.deferred_group = use_args_from.deferred_group
+
+                if (
+                    use_args_from.deferred_raiseload is not _NoArg.NO_ARG
+                    and self.deferred_raiseload is _NoArg.NO_ARG
+                ):
+                    self.deferred_raiseload = use_args_from.deferred_raiseload
+
+                if (
+                    use_args_from._use_existing_column is not _NoArg.NO_ARG
+                    and self._use_existing_column is _NoArg.NO_ARG
+                ):
+                    self._use_existing_column = (
+                        use_args_from._use_existing_column
+                    )
+
+                if (
+                    use_args_from.active_history is not _NoArg.NO_ARG
+                    and self.active_history is _NoArg.NO_ARG
+                ):
+                    self.active_history = use_args_from.active_history
+
+                if (
+                    use_args_from._sort_order is not _NoArg.NO_ARG
+                    and self._sort_order is _NoArg.NO_ARG
+                ):
+                    self._sort_order = use_args_from._sort_order
+
+                if (
+                    use_args_from.column.key is not None
+                    or use_args_from.column.name is not None
+                ):
+                    util.warn_deprecated(
+                        "Can't use the 'key' or 'name' arguments in "
+                        "Annotated with mapped_column(); this will be ignored",
+                        "2.0.22",
+                    )
+
+                if use_args_from._has_dataclass_arguments:
+                    for idx, arg in enumerate(
+                        use_args_from._attribute_options._fields
                     ):
-                        arg = arg.replace("dataclasses_", "")
-                        util.warn_deprecated(
-                            f"Argument '{arg}' is a dataclass argument and "
-                            "cannot be specified within a mapped_column() "
-                            "bundled inside of an Annotated object",
-                            "2.0.22",
-                        )
+                        if (
+                            use_args_from._attribute_options[idx]
+                            is not _NoArg.NO_ARG
+                        ):
+                            arg = arg.replace("dataclasses_", "")
+                            util.warn_deprecated(
+                                f"Argument '{arg}' is a dataclass "
+                                "argument and cannot be specified within a "
+                                "mapped_column() bundled inside of an "
+                                "Annotated object",
+                                "2.0.22",
+                            )
+
+            self.column = self._adjust_for_existing_column(
+                decl_scan, key, self.column
+            )
+
+            for use_args_from in reversed(mapped_columns):
+                use_args_from.column._merge(
+                    self.column, omit_defaults=omit_defaults
+                )
+            sqltype = self.column.type
 
         if sqltype._isnull and not self.column.foreign_keys:
 
@@ -1032,9 +1052,21 @@ class UnmappedColumn(MappedColumn[_T], Unmapped[_T]):
             name
             for name, present in [
                 ("deferred", self.deferred is not _NoArg.NO_ARG),
-                ("deferred_group", self.deferred_group is not None),
-                ("deferred_raiseload", self.deferred_raiseload is not None),
-                ("active_history", self.active_history),
+                (
+                    "deferred_group",
+                    self.deferred_group is not _NoArg.NO_ARG
+                    and self.deferred_group is not None,
+                ),
+                (
+                    "deferred_raiseload",
+                    self.deferred_raiseload is not _NoArg.NO_ARG
+                    and self.deferred_raiseload is not None,
+                ),
+                (
+                    "active_history",
+                    self.active_history is not _NoArg.NO_ARG
+                    and self.active_history,
+                ),
             ]
             if present
         ]

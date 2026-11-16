@@ -60,6 +60,7 @@ from sqlalchemy.schema import DropIndex
 from sqlalchemy.sql import naming
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.annotation import Annotated
+from sqlalchemy.sql.base import _NoArg
 from sqlalchemy.sql.base import _NONE_NAME
 from sqlalchemy.sql.base import DialectKWArgConst
 from sqlalchemy.sql.base import DialectKWArgs
@@ -5064,13 +5065,15 @@ class ColumnDefinitionTest(AssertsCompiledSQL, fixtures.TestBase):
         deregister(schema.CreateColumn)
 
     @testing.combinations(("index",), ("unique",), argnames="paramname")
-    @testing.combinations((True,), (False,), (None,), argnames="orig")
+    @testing.combinations(
+        (True,), (False,), (None,), (_NoArg.NO_ARG,), argnames="orig"
+    )
     @testing.combinations((True,), (False,), (None,), argnames="merging")
     def test_merge_index_unique(self, paramname, orig, merging):
         """test #11091"""
         source = Column(**{paramname: merging})
 
-        target = Column(**{paramname: orig})
+        target = Column(**({} if orig is _NoArg.NO_ARG else {paramname: orig}))
 
         source._merge(target)
 
@@ -5080,10 +5083,99 @@ class ColumnDefinitionTest(AssertsCompiledSQL, fixtures.TestBase):
             target_copy,
         ):
             result = getattr(col, paramname)
-            if orig is None:
+            if orig is _NoArg.NO_ARG:
                 is_(result, merging)
             else:
                 is_(result, orig)
+
+    @testing.combinations(
+        "server_default", "server_onupdate", argnames="paramname"
+    )
+    @testing.variation("copy_first", [True, False])
+    def test_merge_computed_conflicting_none(self, paramname, copy_first):
+        source = Column(Integer, Computed("1 + 1"))
+        target = Column(Integer, **{paramname: None})
+        if copy_first:
+            source, target = source._copy(), target._copy()
+        assert_raises_message(
+            exc.ArgumentError,
+            "A computed column cannot be merged with an explicit None",
+            source._merge,
+            target,
+        )
+        is_(target.computed, None)
+        is_(target.server_default, None)
+        is_(target.server_onupdate, None)
+        is_(source.computed.column, source)
+
+    @testing.combinations("primary_key", "system", argnames="paramname")
+    @testing.combinations(True, False, None, argnames="orig")
+    @testing.combinations(True, False, None, argnames="merging")
+    @testing.variation("copy_first", [True, False])
+    def test_merge_boolean_flags(self, paramname, orig, merging, copy_first):
+        source = Column(
+            **({paramname: merging} if merging is not None else {})
+        )
+        target = Column(**({paramname: orig} if orig is not None else {}))
+        if copy_first:
+            source = source._copy()
+            target = target._copy()
+
+        source._merge(target)
+        expected = orig if orig is not None else bool(merging)
+        is_(getattr(target, paramname), expected)
+        is_(getattr(target._copy(), paramname), expected)
+
+        Column(**{paramname: not expected})._merge(target)
+        if orig is None and merging is None:
+            is_(getattr(target, paramname), True)
+        else:
+            is_(getattr(target, paramname), expected)
+
+    @testing.combinations(
+        "auto", True, False, "ignore_fk", None, argnames="orig"
+    )
+    @testing.combinations(
+        "auto", True, False, "ignore_fk", None, argnames="merging"
+    )
+    @testing.variation("copy_first", [True, False])
+    def test_merge_autoincrement(self, orig, merging, copy_first):
+        source = Column(
+            **({"autoincrement": merging} if merging is not None else {})
+        )
+        target = Column(
+            **({"autoincrement": orig} if orig is not None else {})
+        )
+        if copy_first:
+            source, target = source._copy(), target._copy()
+        source._merge(target)
+        expected = (
+            orig
+            if orig is not None
+            else merging if merging is not None else "auto"
+        )
+        eq_(target.autoincrement, expected)
+
+    def test_merge_info_keeps_target_dictionary(self):
+        source = Column(info={"kind": "source", "source_only": True})
+        target = Column(info={"kind": "target", "target_only": True})
+        source._merge(target)
+        eq_(
+            target.info,
+            {"kind": "target", "target_only": True},
+        )
+        eq_(source.info, {"kind": "source", "source_only": True})
+
+    def test_merge_primary_key_from_constraint(self):
+        table = Table(
+            "t", MetaData(), Column("id", Integer), PrimaryKeyConstraint("id")
+        )
+        target = Column()
+        table.c.id._merge(target)
+        is_(target.primary_key, True)
+
+        Column(primary_key=False)._merge(table.c.id)
+        is_(table.c.id.primary_key, True)
 
     @testing.combinations(
         ("default", lambda ctx: 10),

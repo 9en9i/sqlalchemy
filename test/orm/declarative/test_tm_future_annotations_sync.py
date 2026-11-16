@@ -39,7 +39,9 @@ from typing_extensions import TypeAliasType
 
 from sqlalchemy import BIGINT
 from sqlalchemy import BigInteger
+from sqlalchemy import CheckConstraint
 from sqlalchemy import Column
+from sqlalchemy import Computed
 from sqlalchemy import DateTime
 from sqlalchemy import exc
 from sqlalchemy import exc as sa_exc
@@ -1051,7 +1053,9 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             )
 
     @testing.combinations(("index",), ("unique",), argnames="paramname")
-    @testing.combinations((True,), (False,), (None,), argnames="orig")
+    @testing.combinations(
+        (True,), (False,), (None,), (_NoArg.NO_ARG,), argnames="orig"
+    )
     @testing.combinations((True,), (False,), (None,), argnames="merging")
     def test_index_unique_combinations(
         self, paramname, orig, merging, decl_base
@@ -1063,7 +1067,9 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
         amc = mapped_column(**{paramname: merging})
         myint = Annotated[int, amc]
 
-        mc = mapped_column(**{paramname: orig})
+        mc = mapped_column(
+            **({} if orig is _NoArg.NO_ARG else {paramname: orig})
+        )
 
         class User(decl_base):
             __tablename__ = "user"
@@ -1071,7 +1077,7 @@ class MappedColumnTest(fixtures.TestBase, testing.AssertsCompiledSQL):
             myname: Mapped[myint] = mc
 
         result = getattr(User.__table__.c.myname, paramname)
-        if orig is None:
+        if orig is _NoArg.NO_ARG:
             is_(result, merging)
         else:
             is_(result, orig)
@@ -1808,6 +1814,8 @@ class Pep593InterpretationTests(fixtures.TestBase, testing.AssertsCompiledSQL):
         ("server_default", func.foo(), func.bar()),
         ("nullable", True, False),
         ("nullable", False, True),
+        ("primary_key", True, False),
+        ("primary_key", False, True),
         ("type", BigInteger(), Numeric()),
         argnames="paramname, value, override_value",
     )
@@ -1930,6 +1938,609 @@ class Pep593InterpretationTests(fixtures.TestBase, testing.AssertsCompiledSQL):
             eq_(MyClass.data_one.expression.type.length, 33)
         else:
             eq_(MyClass.data_one.expression.type.length, None)
+
+    @testing.variation(
+        "alias_style",
+        [
+            "plain",
+            ("outer_type_alias", requires.python312),
+        ],
+    )
+    def test_nested_annotated_mapped_column_merge(
+        self, decl_base: Type[DeclarativeBase], alias_style
+    ):
+        global BigInt, Primary, Unique, Timestamp
+        T = TypeVar("T")
+        BigInt = Annotated[int, mapped_column(BIGINT())]
+        Timestamp = Annotated[
+            datetime.datetime,
+            mapped_column(
+                DateTime(),
+                server_default=func.CURRENT_TIMESTAMP(),
+                info={"kind": "ts"},
+            ),
+        ]
+
+        if alias_style.plain:
+            Primary = Annotated[T, mapped_column(primary_key=True)]
+            Unique = Annotated[T, mapped_column(unique=True)]
+        elif alias_style.outer_type_alias:
+            Primary = TypingTypeAliasType(  # type: ignore
+                "Primary",
+                Annotated[T, mapped_column(primary_key=True)],
+                type_params=(T,),
+            )
+            Unique = TypingTypeAliasType(  # type: ignore
+                "Unique",
+                Annotated[T, mapped_column(unique=True)],
+                type_params=(T,),
+            )
+        else:
+            alias_style.fail()
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+
+            id: Mapped[Primary[BigInt]]  # type: ignore[valid-type]
+            some_field: Mapped[Unique[BigInt]]  # type: ignore[valid-type]
+            created_at: Mapped[Timestamp]
+
+        table = SomeModel.__table__
+        assert table is not None
+
+        is_true(table.c.id.primary_key)
+        assert isinstance(table.c.id.type, BIGINT)
+        is_true(table.c.some_field.unique)
+        assert isinstance(table.c.some_field.type, BIGINT)
+        is_false(table.c.some_field.primary_key)
+        eq_(table.c.created_at.info, {"kind": "ts"})
+        is_not(table.c.created_at.server_default, None)
+
+    @testing.variation("outer_true", [True, False])
+    @testing.combinations("default", "insert_default", argnames="default_arg")
+    @testing.variation("explicit_override", [True, False])
+    def test_nested_annotated_all_options_override(
+        self, decl_base, outer_true, default_arg, explicit_override
+    ):
+        global Inner, Outer
+        inner_options = dict(
+            type_=Integer,
+            nullable=not outer_true,
+            primary_key=not outer_true,
+            deferred=not outer_true,
+            deferred_group="inner_group",
+            deferred_raiseload=not outer_true,
+            use_existing_column=not outer_true,
+            autoincrement=not outer_true,
+            doc="inner doc",
+            index=not outer_true,
+            unique=not outer_true,
+            info={"layer": "inner"},
+            onupdate=10,
+            server_default="10",
+            server_onupdate="11",
+            active_history=not outer_true,
+            system=not outer_true,
+            comment="inner comment",
+            sort_order=-10,
+        )
+        outer_options = dict(
+            type_=BigInteger,
+            nullable=bool(outer_true),
+            primary_key=bool(outer_true),
+            deferred=bool(outer_true),
+            deferred_group="outer_group",
+            deferred_raiseload=bool(outer_true),
+            use_existing_column=bool(outer_true),
+            autoincrement=bool(outer_true),
+            doc="outer doc",
+            index=bool(outer_true),
+            unique=bool(outer_true),
+            info={"layer": "outer"},
+            onupdate=20,
+            server_default="20",
+            server_onupdate="21",
+            active_history=bool(outer_true),
+            system=bool(outer_true),
+            comment="outer comment",
+            sort_order=0,
+        )
+        inner_options[default_arg] = 1
+        outer_options[default_arg] = 2
+
+        Inner = Annotated[int, mapped_column(**inner_options)]
+        Outer = Annotated[Inner, mapped_column(**outer_options)]
+        mc = (
+            mapped_column(**inner_options)
+            if explicit_override
+            else mapped_column()
+        )
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Outer] = mc
+
+        expected = inner_options if explicit_override else outer_options
+        for mapped in (mc, mc._copy()):
+            column = mapped.column
+            actual = {
+                key: getattr(column, key)
+                for key in (
+                    "nullable",
+                    "primary_key",
+                    "autoincrement",
+                    "doc",
+                    "index",
+                    "unique",
+                    "info",
+                    "system",
+                    "comment",
+                )
+            }
+            actual.update(
+                type_=type(column.type),
+                deferred=mapped.deferred,
+                deferred_group=mapped.deferred_group,
+                deferred_raiseload=mapped.deferred_raiseload,
+                use_existing_column=mapped._use_existing_column,
+                active_history=mapped.active_history,
+                sort_order=mapped.columns_to_assign[0][1],
+                onupdate=column.onupdate.arg,
+                server_default=column.server_default.arg,
+                server_onupdate=column.server_onupdate.arg,
+            )
+            actual[default_arg] = column.default.arg
+            eq_(actual, expected)
+
+    @testing.combinations(
+        ("comment", "inner", ""),
+        ("doc", "inner", ""),
+        ("autoincrement", True, "auto"),
+        argnames="paramname, inner_value, outer_value",
+    )
+    @testing.variation("explicit_override", [True, False])
+    def test_nested_annotated_explicit_default_override(
+        self, decl_base, paramname, inner_value, outer_value, explicit_override
+    ):
+        global Inner, Outer
+        Inner = Annotated[int, mapped_column(**{paramname: inner_value})]
+        Outer = Annotated[Inner, mapped_column(**{paramname: outer_value})]
+
+        class Mixin:
+            if explicit_override:
+                data: Mapped[Inner] = mapped_column(**{paramname: outer_value})
+            else:
+                data: Mapped[Outer]
+
+        class SomeModel(Mixin, decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+
+        eq_(getattr(SomeModel.__table__.c.data, paramname), outer_value)
+
+    @testing.combinations(
+        "server_default", "server_onupdate", argnames="paramname"
+    )
+    @testing.variation("override_style", ["outer", "attribute"])
+    def test_nested_annotated_computed_conflicting_none(
+        self, decl_base, paramname, override_style
+    ):
+        global Inner, Outer
+        template = mapped_column(Computed("1 + 1"))
+        Inner = Annotated[int, template]
+        Outer = Annotated[Inner, mapped_column(**{paramname: None})]
+
+        with expect_raises_message(
+            ArgumentError,
+            "A computed column cannot be merged with an explicit None",
+        ):
+
+            class SomeModel(decl_base):
+                __tablename__ = "some_table"
+                id: Mapped[int] = mapped_column(primary_key=True)
+                if override_style.attribute:
+                    data: Mapped[Inner] = mapped_column(**{paramname: None})
+                else:
+                    data: Mapped[Outer]
+
+        class OtherModel(decl_base):
+            __tablename__ = "other_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Inner]
+
+        col = OtherModel.__table__.c.data
+        is_(col.server_default, col.computed)
+        is_(col.server_onupdate, col.computed)
+        is_not(col.computed, template.column.computed)
+        is_(template.column.computed.column, template.column)
+
+    @testing.combinations(
+        "server_default", "server_onupdate", argnames="paramname"
+    )
+    def test_nested_annotated_computed_overrides_none(
+        self, decl_base, paramname
+    ):
+        global Outer
+        Inner = Annotated[int, mapped_column(**{paramname: None})]
+        Outer = Annotated[Inner, mapped_column(Computed("1 + 1"))]
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Outer]
+
+        col = SomeModel.__table__.c.data
+        is_not(col.computed, None)
+        is_(col.server_default, col.computed)
+        is_(col.server_onupdate, col.computed)
+
+    @testing.combinations(
+        ("default", 5),
+        ("insert_default", 5),
+        ("onupdate", 5),
+        ("server_default", "5"),
+        ("server_onupdate", "5"),
+        argnames="paramname, value",
+    )
+    @testing.variation("override_style", ["outer", "attribute", "unset"])
+    def test_nested_annotated_none_default_override(
+        self, decl_base, paramname, value, override_style
+    ):
+        global Inner, Outer
+        Inner = Annotated[int, mapped_column(**{paramname: value})]
+        if override_style.outer:
+            Outer = Annotated[Inner, mapped_column(**{paramname: None})]
+        else:
+            Outer = Annotated[Inner, mapped_column()]
+
+        class Mixin:
+            if override_style.attribute:
+                data: Mapped[Outer] = mapped_column(**{paramname: None})
+            else:
+                data: Mapped[Outer]
+
+        class SomeModel(Mixin, decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+
+        column = SomeModel.__table__.c.data
+        column_param = (
+            "default" if paramname == "insert_default" else paramname
+        )
+        for col in (column, column._copy()):
+            result = getattr(col, column_param)
+            if override_style.unset:
+                eq_(result.arg, value)
+            else:
+                is_(result, None)
+
+    @testing.combinations(
+        ("default", "insert_default"),
+        ("insert_default", "default"),
+        argnames="inner_arg, outer_arg",
+    )
+    def test_nested_annotated_none_default_cross_alias(
+        self, decl_base, inner_arg, outer_arg
+    ):
+        global Outer
+        Inner = Annotated[int, mapped_column(**{inner_arg: 5})]
+        Outer = Annotated[Inner, mapped_column(**{outer_arg: None})]
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Outer]
+
+        is_(SomeModel.__table__.c.data.default, None)
+
+    @testing.variation("outer_default", ["value", "none", "unset"])
+    def test_three_nested_annotated_templates(self, decl_base, outer_default):
+        global Outer
+        Inner = Annotated[
+            int,
+            mapped_column(default=1, index=True, info={"inner": True}),
+        ]
+        Middle = Annotated[
+            Inner,
+            mapped_column(default=2, unique=True, info={"middle": True}),
+        ]
+        if outer_default.value:
+            options = {"default": 3}
+        elif outer_default.none:
+            options = {"default": None}
+        else:
+            options = {}
+        Outer = Annotated[
+            Middle, mapped_column(info={"outer": True}, **options)
+        ]
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Outer]
+
+        col = SomeModel.__table__.c.data
+        is_(col.index, True)
+        is_(col.unique, True)
+        eq_(col.info, {"outer": True})
+        if outer_default.none:
+            is_(col.default, None)
+        else:
+            eq_(col.default.arg, 3 if outer_default.value else 2)
+
+    @testing.combinations(
+        ("doc", "inner"),
+        ("doc", ""),
+        ("comment", "inner"),
+        ("comment", ""),
+        ("index", True),
+        ("unique", True),
+        ("primary_key", True),
+        ("nullable", False),
+        ("type_", BigInteger),
+        ("info", {"inner": True}),
+        ("deferred_group", "inner"),
+        ("deferred_raiseload", True),
+        argnames="paramname, inner_value",
+    )
+    @testing.variation("override_style", ["outer", "attribute", "unset"])
+    @testing.variation("copy_before_scan", [True, False])
+    def test_nested_annotated_none_option_override(
+        self,
+        decl_base,
+        paramname,
+        inner_value,
+        override_style,
+        copy_before_scan,
+    ):
+        global Outer
+        Inner = Annotated[int, mapped_column(**{paramname: inner_value})]
+        Outer = Annotated[
+            Inner,
+            mapped_column(
+                **({paramname: None} if override_style.outer else {})
+            ),
+        ]
+        mc = mapped_column(
+            **({paramname: None} if override_style.attribute else {})
+        )
+        if copy_before_scan:
+            mc = mc._copy()
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Outer] = mc
+
+        for mapped in (mc, mc._copy()):
+            if paramname in ("deferred_group", "deferred_raiseload"):
+                actual = getattr(mapped, paramname)
+            elif paramname == "type_":
+                actual = type(mapped.column.type)
+            else:
+                actual = getattr(mapped.column, paramname)
+            if override_style.unset:
+                expected = inner_value
+            elif paramname == "type_":
+                expected = Integer
+            elif paramname == "info":
+                expected = {}
+            elif paramname == "primary_key":
+                expected = False
+            else:
+                expected = None
+            eq_(actual, expected)
+
+    @testing.combinations("unique", "primary_key", argnames="paramname")
+    @testing.combinations(True, False, argnames="outer_value")
+    @testing.variation("include_existing_col", [True, False])
+    def test_nested_annotated_mapped_column_last_wins(
+        self,
+        decl_base: Type[DeclarativeBase],
+        paramname,
+        outer_value,
+        include_existing_col,
+    ):
+        global Inner, Outer
+        T = TypeVar("T")
+        Inner = Annotated[T, mapped_column(**{paramname: not outer_value})]
+        Outer = Annotated[T, mapped_column(**{paramname: outer_value})]
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+
+            id: Mapped[int] = mapped_column(primary_key=True)
+            if include_existing_col:
+                data: Mapped[Outer[Inner[int]]] = mapped_column()
+            else:
+                data: Mapped[Outer[Inner[int]]]
+
+        is_(getattr(SomeModel.__table__.c.data, paramname), outer_value)
+
+    @testing.variation("explicit_constraints", [True, False])
+    def test_nested_annotated_constraints_accumulate(
+        self, decl_base, explicit_constraints
+    ):
+        global Inner, Outer
+        checks = {
+            "inner": "data > 0",
+            "outer": "data < 100",
+            "attribute": "data != 50",
+        }
+        for layer in checks:
+            Table(
+                f"parent_{layer}",
+                decl_base.metadata,
+                Column("id", Integer, primary_key=True),
+            )
+
+        inner_fk = ForeignKey("parent_inner.id", name="fk_inner")
+        inner_check = CheckConstraint(checks["inner"], name="ck_inner")
+        inner_template = mapped_column(inner_fk, inner_check)
+        outer_fk = ForeignKey("parent_outer.id", name="fk_outer")
+        outer_check = CheckConstraint(checks["outer"], name="ck_outer")
+        outer_template = mapped_column(outer_fk, outer_check)
+        Inner = Annotated[int, inner_template]
+        Outer = Annotated[Inner, outer_template]
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            if explicit_constraints:
+                data: Mapped[Outer] = mapped_column(
+                    ForeignKey("parent_attribute.id", name="fk_attribute"),
+                    CheckConstraint(checks["attribute"], name="ck_attribute"),
+                )
+            else:
+                data: Mapped[Outer]
+
+        class OtherModel(decl_base):
+            __tablename__ = "other_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Outer]
+
+        for model in (SomeModel, OtherModel):
+            col = model.__table__.c.data
+            layers = {"inner", "outer"}
+            if model is SomeModel and explicit_constraints:
+                layers.add("attribute")
+            eq_(len(col.foreign_keys), len(layers))
+            eq_(
+                {fk.target_fullname for fk in col.foreign_keys},
+                {f"parent_{layer}.id" for layer in layers},
+            )
+            eq_(len(col.constraints), len(layers))
+            eq_(
+                {str(check.sqltext) for check in col.constraints},
+                {checks[layer] for layer in layers},
+            )
+            ddl = str(CreateTable(model.__table__))
+            for layer in layers:
+                assert f"CONSTRAINT ck_{layer} CHECK ({checks[layer]})" in ddl
+                assert (
+                    f"CONSTRAINT fk_{layer} FOREIGN KEY(data) "
+                    f"REFERENCES parent_{layer} (id)"
+                ) in ddl
+            for constraint in col.foreign_keys | col.constraints:
+                is_(constraint.parent, col)
+
+        first = SomeModel.__table__.c.data
+        second = OtherModel.__table__.c.data
+        assert first.foreign_keys.isdisjoint(second.foreign_keys)
+        assert first.constraints.isdisjoint(second.constraints)
+        for template, fk, check in (
+            (inner_template, inner_fk, inner_check),
+            (outer_template, outer_fk, outer_check),
+        ):
+            eq_(template.column.foreign_keys, {fk})
+            eq_(template.column.constraints, {check})
+            is_(template.column.table, None)
+            is_(fk.parent, template.column)
+            is_(fk.constraint, None)
+            is_(check.parent, template.column)
+
+    @testing.variation("explicit_override", [True, False])
+    def test_nested_annotated_info_precedence(
+        self, decl_base: Type[DeclarativeBase], explicit_override
+    ):
+        global Inner, Outer
+        Inner = Annotated[
+            int, mapped_column(info={"kind": "inner", "inner_only": True})
+        ]
+        Outer = Annotated[
+            Inner, mapped_column(info={"kind": "outer", "outer_only": True})
+        ]
+
+        class Mixin:
+            if explicit_override:
+                data: Mapped[Outer] = mapped_column(
+                    info={"kind": "attribute", "attribute_only": True}
+                )
+            else:
+                data: Mapped[Outer]
+
+        class SomeModel(Mixin, decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+
+        expected = {"kind": "outer", "outer_only": True}
+        if explicit_override:
+            expected = {"kind": "attribute", "attribute_only": True}
+        eq_(SomeModel.__table__.c.data.info, expected)
+
+        class OtherModel(decl_base):
+            __tablename__ = "other_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Inner]
+
+        eq_(
+            OtherModel.__table__.c.data.info,
+            {"kind": "inner", "inner_only": True},
+        )
+
+    @testing.combinations(None, {}, {"attribute": True}, argnames="value")
+    def test_nested_annotated_info_override(self, decl_base, value):
+        global Outer
+        Inner = Annotated[int, mapped_column(info={"inner": True})]
+        Outer = Annotated[Inner, mapped_column(info={"outer": True})]
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Outer] = mapped_column(info=value)
+
+        eq_(SomeModel.__table__.c.data.info, value or {})
+
+    def test_nested_annotated_attr_mapped_column_still_wins(
+        self, decl_base: Type[DeclarativeBase]
+    ):
+        global BigInt, Indexed
+        T = TypeVar("T")
+        BigInt = Annotated[int, mapped_column(BIGINT())]
+        Indexed = Annotated[T, mapped_column(index=True)]
+
+        class SomeModel(decl_base):
+            __tablename__ = "some_table"
+
+            id: Mapped[int] = mapped_column(primary_key=True)
+            data: Mapped[Indexed[BigInt]] = mapped_column(index=False)
+
+        col = SomeModel.__table__.c.data
+        assert isinstance(col.type, BIGINT)
+        is_(col.index, False)
+
+    @testing.variation("primary_key_none", [True, False])
+    def test_generic_primary_key_attribute_override(
+        self, decl_base: Type[DeclarativeBase], primary_key_none
+    ):
+        global Primary
+        T = TypeVar("T")
+        Primary = Annotated[T, mapped_column(primary_key=True)]
+
+        class Mixin:
+            data: Mapped[Primary[int]] = mapped_column(primary_key=False)
+
+        class SomeModel(Mixin, decl_base):
+            __tablename__ = "some_table"
+            id: Mapped[int] = mapped_column(primary_key=True)
+
+        is_(SomeModel.__table__.c.data.primary_key, False)
+        eq_(list(SomeModel.__table__.primary_key), [SomeModel.__table__.c.id])
+
+        class OtherModel(decl_base):
+            __tablename__ = "other_table"
+            id: Mapped[Primary[int]]
+            if primary_key_none:
+                data: Mapped[Primary[int]] = mapped_column(primary_key=None)
+            else:
+                data: Mapped[Primary[int]]
+
+        is_(OtherModel.__table__.c.id.primary_key, True)
+        is_(
+            OtherModel.__table__.c.data.primary_key,
+            False if primary_key_none else True,
+        )
 
 
 class TypeResolutionTests(fixtures.TestBase, testing.AssertsCompiledSQL):

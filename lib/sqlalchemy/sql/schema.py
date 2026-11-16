@@ -132,6 +132,7 @@ if typing.TYPE_CHECKING:
 
 _SI = TypeVar("_SI", bound="SchemaItem")
 _TAB = TypeVar("_TAB", bound="Table")
+_OptionT = TypeVar("_OptionT")
 
 
 _ConstraintNameArgument = Optional[Union[str, _NoneName]]
@@ -1796,25 +1797,31 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
         /,
         *args: SchemaEventTarget,
         name: Optional[str] = None,
-        type_: Optional[_CovariantTypeEngineArgument[_T]] = None,
-        autoincrement: _AutoIncrementType = "auto",
+        type_: Union[
+            _NoArg, _CovariantTypeEngineArgument[_T], None
+        ] = _NoArg.NO_ARG,
+        autoincrement: Union[_NoArg, _AutoIncrementType] = _NoArg.NO_ARG,
         default: Optional[Any] = _NoArg.NO_ARG,
         insert_default: Optional[Any] = _NoArg.NO_ARG,
-        doc: Optional[str] = None,
+        doc: Union[_NoArg, str, None] = _NoArg.NO_ARG,
         key: Optional[str] = None,
-        index: Optional[bool] = None,
-        unique: Optional[bool] = None,
-        info: Optional[_InfoType] = None,
+        index: Union[_NoArg, bool, None] = _NoArg.NO_ARG,
+        unique: Union[_NoArg, bool, None] = _NoArg.NO_ARG,
+        info: Union[_NoArg, _InfoType, None] = _NoArg.NO_ARG,
         nullable: Optional[
             Union[bool, Literal[SchemaConst.NULL_UNSPECIFIED]]
         ] = SchemaConst.NULL_UNSPECIFIED,
-        onupdate: Optional[Any] = None,
-        primary_key: bool = False,
-        server_default: Optional[_ServerDefaultArgument] = None,
-        server_onupdate: Optional[_ServerOnUpdateArgument] = None,
+        onupdate: Optional[Any] = _NoArg.NO_ARG,
+        primary_key: Union[_NoArg, bool, None] = _NoArg.NO_ARG,
+        server_default: Union[
+            _NoArg, _ServerDefaultArgument, None
+        ] = _NoArg.NO_ARG,
+        server_onupdate: Union[
+            _NoArg, _ServerOnUpdateArgument, None
+        ] = _NoArg.NO_ARG,
         quote: Optional[bool] = None,
-        system: bool = False,
-        comment: Optional[str] = None,
+        system: Union[_NoArg, bool] = _NoArg.NO_ARG,
+        comment: Union[_NoArg, str, None] = _NoArg.NO_ARG,
         insert_sentinel: bool = False,
         _omit_from_statements: bool = False,
         _proxies: Optional[Any] = None,
@@ -2329,6 +2336,22 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
 
         """  # noqa: E501, RST201, RST202
 
+        self._user_defined_options = set()
+
+        doc = self._resolve_option("doc", doc, None)
+        comment = self._resolve_option("comment", comment, None)
+        index = self._resolve_option("index", index, None)
+        unique = self._resolve_option("unique", unique, None)
+        info = self._resolve_option("info", info, None)
+        type_ = self._resolve_option("type_", type_, None)
+        primary_key = self._resolve_option("primary_key", primary_key, False)
+        system = self._resolve_option("system", system, False)
+        autoincrement = self._resolve_option(
+            "autoincrement", autoincrement, "auto"
+        )
+        if primary_key is None:
+            primary_key = False
+
         l_args = [__name_pos, __type_pos] + list(args)
         del args
 
@@ -2349,6 +2372,7 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
                         "May not pass type_ positionally and as a keyword."
                     )
                 type_ = l_args.pop(0)  # type: ignore[assignment]
+                self._user_defined_options.add("type_")
             elif l_args[0] is None:
                 l_args.pop(0)
 
@@ -2372,7 +2396,7 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
         if udn is not NULL_UNSPECIFIED:
             self.nullable = udn
         else:
-            self.nullable = not primary_key
+            self.nullable = not self.primary_key
 
         # these default to None because .index and .unique is *not*
         # an informational flag about Column - there can still be an
@@ -2397,6 +2421,14 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
             # otherwise, add DDL-related events
             self._set_type(self.type)
 
+        onupdate = self._resolve_option("onupdate", onupdate, None)
+        server_default = self._resolve_option(
+            "server_default", server_default, None
+        )
+        server_onupdate = self._resolve_option(
+            "server_onupdate", server_onupdate, None
+        )
+
         if insert_default is not _NoArg.NO_ARG:
             if default is not _NoArg.NO_ARG:
                 raise exc.ArgumentError(
@@ -2404,10 +2436,12 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
                     "of Column are mutually exclusive"
                 )
             resolved_default = insert_default
-        elif default is not _NoArg.NO_ARG:
-            resolved_default = default
         else:
-            resolved_default = None
+            resolved_default = default
+
+        resolved_default = self._resolve_option(
+            "default", resolved_default, None
+        )
 
         if resolved_default is not None:
             if not isinstance(resolved_default, (ColumnDefault, Sequence)):
@@ -2473,6 +2507,13 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
 
     """
 
+    _user_defined_options: Set[str]
+    """Options explicitly supplied or inherited from a column template.
+
+    Used during merging to distinguish an unset option from an explicit
+    value, including ``None`` or a value equal to its default.
+    """
+
     index: Optional[bool]
     """The value of the :paramref:`_schema.Column.index` parameter.
 
@@ -2502,6 +2543,28 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
     computed: Optional[Computed]
 
     identity: Optional[Identity]
+
+    def _resolve_option(
+        self, name: str, value: Union[_OptionT, _NoArg], default: _OptionT
+    ) -> _OptionT:
+        if value is _NoArg.NO_ARG:
+            return default
+
+        self._user_defined_options.add(name)
+        return value
+
+    def _can_merge_option(
+        self,
+        other: Column[Any],
+        name: str,
+        *,
+        source_has_value: bool = False,
+        target_has_value: bool = False,
+    ) -> bool:
+        if name in other._user_defined_options or target_has_value:
+            return False
+
+        return name in self._user_defined_options or source_has_value
 
     def _set_type(self, type_: TypeEngine[Any]) -> None:
         assert self.type._isnull or type_ is self.type
@@ -2813,6 +2876,7 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
         # ORM flipping the .nullable flag directly
         c.nullable = self.nullable
         c._user_defined_nullable = self._user_defined_nullable
+        c._user_defined_options = self._user_defined_options.copy()
 
         return self._schema_item_copy(c)
 
@@ -2827,20 +2891,58 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
 
         """
 
-        if self.primary_key:
-            other.primary_key = True
+        if self.computed is not None and other.computed is None:
+            cleared_server_default = (
+                "server_default" in other._user_defined_options
+                and other.server_default is None
+            )
+            cleared_server_onupdate = (
+                "server_onupdate" in other._user_defined_options
+                and other.server_onupdate is None
+            )
 
-        if self.autoincrement != "auto" and other.autoincrement == "auto":
+            if cleared_server_default or cleared_server_onupdate:
+                raise exc.ArgumentError(
+                    "A computed column cannot be merged with an explicit None "
+                    "for server_default or server_onupdate"
+                )
+
+        if self._can_merge_option(
+            other,
+            "primary_key",
+            source_has_value=self.primary_key,
+            target_has_value=other.primary_key,
+        ):
+            other.primary_key = self.primary_key
+            other._user_defined_options.add("primary_key")
+
+        if self._can_merge_option(
+            other,
+            "autoincrement",
+            source_has_value=self.autoincrement != "auto",
+            target_has_value=other.autoincrement != "auto",
+        ):
             other.autoincrement = self.autoincrement
+            other._user_defined_options.add("autoincrement")
 
-        if self.system:
+        if self._can_merge_option(other, "system"):
             other.system = self.system
+            other._user_defined_options.add("system")
 
-        if self.info:
-            other.info.update(self.info)
+        if "info" not in other._user_defined_options:
+            for key, value in self.info.items():
+                other.info.setdefault(key, value)
+            if "info" in self._user_defined_options:
+                other._user_defined_options.add("info")
 
         type_ = self.type
-        if not type_._isnull and other.type._isnull:
+        if self._can_merge_option(
+            other,
+            "type_",
+            source_has_value=not type_._isnull,
+            target_has_value=not other.type._isnull,
+        ):
+            other._user_defined_options.add("type_")
             if isinstance(type_, SchemaEventTarget):
                 type_ = type_.copy()
 
@@ -2860,42 +2962,88 @@ class Column(DialectKWArgs, SchemaItem, ColumnClause[_T], Named[_T]):
             other.nullable = self.nullable
             other._user_defined_nullable = self._user_defined_nullable
 
-        if (
-            not omit_defaults
-            and self.default is not None
-            and other.default is None
+        if not omit_defaults and self._can_merge_option(
+            other,
+            "default",
+            source_has_value=self.default is not None,
+            target_has_value=other.default is not None,
         ):
-            new_default = self.default._copy()
-            new_default._set_parent(other)
+            if self.default is not None:
+                new_default = self.default._copy()
+                new_default._set_parent(other)
+            other._user_defined_options.add("default")
 
-        if self.server_default and other.server_default is None:
+        if self._can_merge_option(
+            other,
+            "server_default",
+            source_has_value=self.server_default is not None,
+            target_has_value=other.server_default is not None,
+        ):
             new_server_default = self.server_default
             if isinstance(new_server_default, FetchedValue):
                 new_server_default = new_server_default._copy()
                 new_server_default._set_parent(other)
             else:
                 other.server_default = new_server_default
+            other._user_defined_options.add("server_default")
 
-        if self.server_onupdate and other.server_onupdate is None:
-            new_server_onupdate = self.server_onupdate
-            new_server_onupdate = new_server_onupdate._copy()
-            new_server_onupdate._set_parent(other)
+        if self._can_merge_option(
+            other,
+            "server_onupdate",
+            source_has_value=self.server_onupdate is not None,
+            target_has_value=other.server_onupdate is not None,
+        ):
+            if self.server_onupdate is not None:
+                new_server_onupdate = self.server_onupdate._copy()
+                new_server_onupdate._set_parent(other)
+            other._user_defined_options.add("server_onupdate")
 
-        if self.onupdate and other.onupdate is None:
-            new_onupdate = self.onupdate._copy()
-            new_onupdate._set_parent(other)
+        if self._can_merge_option(
+            other,
+            "onupdate",
+            source_has_value=self.onupdate is not None,
+            target_has_value=other.onupdate is not None,
+        ):
+            if self.onupdate is not None:
+                new_onupdate = self.onupdate._copy()
+                new_onupdate._set_parent(other)
+            other._user_defined_options.add("onupdate")
 
-        if self.index in (True, False) and other.index is None:
+        if self._can_merge_option(
+            other,
+            "index",
+            source_has_value=self.index is not None,
+            target_has_value=other.index is not None,
+        ):
             other.index = self.index
+            other._user_defined_options.add("index")
 
-        if self.unique in (True, False) and other.unique is None:
+        if self._can_merge_option(
+            other,
+            "unique",
+            source_has_value=self.unique is not None,
+            target_has_value=other.unique is not None,
+        ):
             other.unique = self.unique
+            other._user_defined_options.add("unique")
 
-        if self.doc and other.doc is None:
+        if self._can_merge_option(
+            other,
+            "doc",
+            source_has_value=self.doc is not None,
+            target_has_value=other.doc is not None,
+        ):
             other.doc = self.doc
+            other._user_defined_options.add("doc")
 
-        if self.comment and other.comment is None:
+        if self._can_merge_option(
+            other,
+            "comment",
+            source_has_value=self.comment is not None,
+            target_has_value=other.comment is not None,
+        ):
             other.comment = self.comment
+            other._user_defined_options.add("comment")
 
         for const in self.constraints:
             if not const._type_bound:
